@@ -3,10 +3,12 @@
 Data functions
 '''
 
+import argparse
 import requests
 import logging
 import yfinance as yf
 import pandas as pd
+import tempfile
 from os import makedirs
 from base64 import b64encode
 from tenacity import retry, wait_random, stop_after_attempt
@@ -16,15 +18,15 @@ from bcb import sgs
 from constants import *
 from logger import logger
 
-def _to_float(text):
+def _br_value_to_float(text):
     '''
-    Convert text to float
+    Convert Brazilian formatted number to float
     '''
     text = text.replace('.', '')
     text = text.replace(',', '.')
     return float(text)
 
-def fetch_url(url):
+def _fetch_url(url):
     '''
     Fetch content from a URL
     '''
@@ -43,7 +45,7 @@ def _fetch_ifix_year(year):
     params = f'{{"index":"IFIX","language":"pt-br","year":"{year}"}}'
     params = b64encode(params.encode())
     url = URL_IFIX + str(params.decode())
-    content = fetch_url(url)
+    content = _fetch_url(url)
     if content is None:
         return None
     # Convert content to json
@@ -59,7 +61,7 @@ def _fetch_ifix_year(year):
             if value is not None:
                 ifix_dict = {
                     DATE: str(year) + '-' + str(month) + '-' + str(day),
-                    IFIX: _to_float(value)
+                    IFIX: _br_value_to_float(value)
                 }
                 history_list.append(ifix_dict)
     return history_list
@@ -85,9 +87,9 @@ def _download_ifix():
         df_ifix.sort_index(inplace=True)
         df_ifix.to_csv(FILE_IFIX)
 
-def get_ifix():
+def get_ifix_series():
     '''
-    Get IFIX data from file or try to download it
+    Get IFIX series from file or try to download it
     '''
     df_ifix = None
     try:
@@ -99,7 +101,17 @@ def get_ifix():
                               index_col=DATE)
     return df_ifix
 
-
+@retry(
+    wait=wait_random(2, 10),
+    stop=stop_after_attempt(5)
+)
+def _fetch_selic(start, end):
+    '''
+    Fetch SELIC data from BCB
+    '''
+    # Get daily SELIC from BCB API
+    return sgs.get({SELIC: 432}, start=start, end=end)
+    
 def _download_selic():
     '''
     Fetch SELIC data from BCB
@@ -111,15 +123,19 @@ def _download_selic():
     while year <= current_year:
         start = f'{year}-01-01'
         end = f'{year + 9}-12-31'
-        df_current = sgs.get({SELIC: 11},
-                           start=start, end=end)
+        # Get annual SELIC by day
+        df_current = _fetch_selic(start, end)
         year += 10
         df_selic = pd.concat([df_selic, df_current])
+    # Keep just the last value of each month
+    df_selic = df_selic.resample('ME').last()
+    df_selic[SELIC] = df_selic[SELIC] / 100.0
+    # Save to file
     df_selic.to_csv(FILE_SELIC)
 
-def get_selic():
+def _get_selic_series():
     '''
-    Get SELIC data from file or try to download it
+    Get SELIC series from file or try to download it
     '''
     df_selic = None
     try:
@@ -129,7 +145,19 @@ def get_selic():
         _download_selic()
         df_selic = pd.read_csv(FILE_SELIC, parse_dates=True,
                                index_col=DATE)
+    df_selic.index = df_selic.index.to_period('M')
     return df_selic
+
+def get_selic(year, month):
+    '''
+    Get SELIC rate for a given month
+    '''
+    df_selic = _get_selic_series()
+    try:
+        selic_rate = df_selic.loc[str(year) + '-' + str(month)][SELIC]
+    except:
+        selic_rate = 0.0
+    return selic_rate
 
 def get_reit_list(only_valid=False):
     '''
@@ -145,7 +173,7 @@ def get_reit_list(only_valid=False):
                      for line in f.readlines()]
     return reit_list
 
-def save_valid_reit_list(reit_list):
+def _save_valid_reit_list(reit_list):
     '''
     Save the valid list of REITs
     '''
@@ -153,7 +181,7 @@ def save_valid_reit_list(reit_list):
         for reit in reit_list:
             f.write(reit + '\n')
 
-def get_cache_dir():
+def _get_cache_dir():
     '''
     Get cache directory for the application
     '''
@@ -161,11 +189,11 @@ def get_cache_dir():
     makedirs(cache_dir, exist_ok=True)
     return cache_dir
 
-def get_filename(ticker, subdir=''):
+def _get_filename(ticker, subdir=''):
     '''
     Get the filename for a ticker
     '''
-    filedir = get_cache_dir()
+    filedir = _get_cache_dir()
     if subdir:
         filedir += '/' + subdir
         makedirs(filedir,
@@ -173,7 +201,7 @@ def get_filename(ticker, subdir=''):
     filename = filedir + '/' + ticker + '.csv'
     return filename
 
-def empty_data():
+def _empty_stock_data():
     '''
     Create an empty DataFrame with the required columns
     '''
@@ -187,7 +215,7 @@ def empty_data():
     wait=wait_random(1, 5),
     stop=stop_after_attempt(3)
 )
-def fetch_stock_data(ticker):
+def _fetch_stock_data(ticker):
     '''
     Fetch stock data for a given ticker
     '''
@@ -200,39 +228,36 @@ def fetch_stock_data(ticker):
     df_data[DATE] = pd.to_datetime(df_data[DATE]).dt.date
     df_data.set_index(DATE, inplace=True)
     if df_data.empty:
-        df_data = empty_data()
+        df_data = _empty_stock_data()
     return df_data
 
-def download_stock_list(ticker_list):
+def _download_stock_list(ticker_list):
     '''
     Fetch data for a list of tickers
     '''
-    success_list = []
     # Use tqdm for parallel fetching with progress bar
     for ticker in tqdm(ticker_list, desc='Fetching data'):
         try:
-            df_data = fetch_stock_data(ticker)
-            filename = get_filename(ticker, DIR_STOCK)
+            df_data = _fetch_stock_data(ticker)
+            filename = _get_filename(ticker, DIR_STOCK)
             df_data.to_csv(filename)
-            success_list.append(ticker)
         except Exception as e:
             logger.error('Error fetching data for %s.', ticker)
             logger.error('%s', e)
-    return success_list
 
 def get_stock_data(ticker):
     '''
     Get stock data from cache
     '''
-    filename = get_filename(ticker, DIR_STOCK)
+    filename = _get_filename(ticker, DIR_STOCK)
     try:
         return pd.read_csv(filename, parse_dates=True, index_col=DATE)
     except:
-        return empty_data()
+        return _empty_stock_data()
 
 def download_all():
     '''
-    Test data functions
+    Download all required data
     '''
     logger.debug('Downloading all IFIX')
     _download_ifix()
@@ -240,18 +265,28 @@ def download_all():
     _download_selic()
     logger.debug('Downloading all REIT data')
     reit_list = get_reit_list()
-    final_list = download_stock_list(reit_list)
-    # print(f'Fetched data for {len(final_list)} REITs.')
-    logger.debug('Saving valid REIT list. Total %s REITs.', len(final_list))
-    save_valid_reit_list(final_list)
+    _download_stock_list(reit_list)
 
-def join_data(ticker_list, start_date, end_date, field=CLOSE):
+def update_valid_reit_list():
+    '''
+    Update the valid REIT list based on available data
+    '''
+    reit_list = get_reit_list(only_valid=False)
+    valid_list = []
+    for ticker in reit_list:
+        df_data = get_stock_data(ticker)
+        if df_data is not None and not df_data.empty:
+            valid_list.append(ticker)
+    logger.debug('Saving valid REIT list. Total %s REITs.', len(valid_list))
+    _save_valid_reit_list(valid_list)
+
+def join_history(ticker_list, start_date, end_date, fill_missing=True, 
+                 field=CLOSE):
     '''
     Join data for multiple tickers
     '''
     df_joined = pd.DataFrame()
     for ticker in ticker_list:
-        logger.debug('Joining data for %s.', ticker)
         df_data = get_stock_data(ticker)
         if df_data is None or df_data.empty:
             continue
@@ -265,8 +300,9 @@ def join_data(ticker_list, start_date, end_date, field=CLOSE):
                              left_index=True, right_index=True,
                              how='outer')
     # Fill missing values
-    df_joined.ffill(inplace=True)
-    df_joined.bfill(inplace=True)
+    if fill_missing:
+        df_joined.ffill(inplace=True)
+        df_joined.bfill(inplace=True)
     return df_joined
 
 def topk_by_volume(ticker_list, k=0, start_date=None, end_date=None):
@@ -275,7 +311,6 @@ def topk_by_volume(ticker_list, k=0, start_date=None, end_date=None):
     '''
     volume_list = []
     for ticker in ticker_list:
-        logger.debug('Calculating volume for %s.', ticker)
         df_data = get_stock_data(ticker)
         if df_data is None or df_data.empty:
             continue
@@ -294,26 +329,87 @@ def topk_by_volume(ticker_list, k=0, start_date=None, end_date=None):
     df_topk = pd.DataFrame(volume_list, columns=[TICKER, VOLUME])
     return df_topk
 
+def count_stock_by_month(ticker_list, start_date, end_date):
+    '''
+    Count number of tickers by month
+    '''
+    df_history = join_history(ticker_list, start_date, end_date, 
+                              fill_missing=False)
+    df_count = df_history.count(axis=1)
+    df_monthly = df_count.resample('ME').max()
+    return df_monthly
+
+def save_temp_file(df_data, filename):
+    '''
+    Save DataFrame to a temporary file
+    '''
+    temp_dir = tempfile.gettempdir()
+    filepath = temp_dir + '/' + filename + '.csv'
+    df_data.to_csv(filepath)
+    return filepath
+
+def load_temp_file(filename):
+    '''
+    Load DataFrame from a temporary file
+    '''
+    temp_dir = tempfile.gettempdir()
+    filepath = temp_dir + '/' + filename + '.csv'
+    try:
+        df_data = pd.read_csv(filepath, parse_dates=True,
+                              index_col=DATE)
+        return df_data
+    except:
+        return None
+
 def test():
     '''
     Test data functions
     '''
     logger.setLevel(logging.DEBUG)
-    # download_all()
-    df = get_ifix()
+    df = get_ifix_series()
     logger.debug('IFIX: %s rows', len(df))
-    df = get_selic()
+    df = _get_selic_series()
     logger.debug('SELIC: %s rows', len(df))
     fii_list = get_reit_list(only_valid=True)
     df = topk_by_volume(fii_list, k=10)
     logger.debug('Top 10 by volume:')
     topk_list = df[TICKER].tolist()
     logger.debug('%s', topk_list)
-    logger.debug('Joining data for top 10 REITs.')
-    df = join_data(topk_list,
-                   '2020-01-01', '2024-12-31')
-    logger.debug('Joined data:')
+    logger.debug('Joining data for top 10 REITs (2024).')
+    df = join_history(topk_list,
+                   '2024-01-01', '2024-12-31')
+    logger.debug('\n%s', df)
+    logger.debug('Counting REITs by month (2010-2024).')
+    df = count_stock_by_month(fii_list,
+                        '2010-01-01', '2024-12-31')
+    logger.debug('Count by month:')
+    df.to_csv('data/fiis_count.csv')
     logger.debug('\n%s', df)
 
+def _get_arguments():
+    '''
+    Get arguments
+    '''
+    parser = argparse.ArgumentParser('OPBrReit Data Module')
+    parser.add_argument('-d', '--download', action="store_true",
+                        default=False,
+                        help='Download data')
+    parser.add_argument('-t', '--test', action="store_true",
+                        default=False,
+                        help='Test data functions')
+    args = parser.parse_args()
+    return args
+
+def main():
+    '''
+    Main function
+    '''
+    args = _get_arguments()
+    if args.download:
+        download_all()
+        update_valid_reit_list()
+    if args.test:
+        test()
+
 if __name__ == '__main__':
-    test()
+    main()
