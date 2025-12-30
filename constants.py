@@ -2,21 +2,23 @@
 '''
 Constants
 '''
+import tempfile
 
 APP_NAME = 'opbrreit'
 
+DIR_DATA = 'data'
 DIR_STOCK = 'stock'
 # Files
 FILE_REITS = 'data/b3reits.txt'
 FILE_REITS_VALID = 'data/b3reits_valid.txt'
 FILE_IFIX = 'data/ifix.csv'
 FILE_SELIC = 'data/selic.csv'
-FILE_EXPERIMENTS = 'data/experiments.csv'
+FILE_EXP_INITIAL = 'data/exp_initial.csv'
 
 # URLs
 URL_IFIX = 'https://sistemaswebb3-listados.b3.com.br/indexStatisticsProxy/IndexCall/GetPortfolioDay/'
 
-# Columns
+# Asset dataframe columns
 TICKER = 'ticker'
 DATE = 'Date'
 OPEN = 'Open'
@@ -27,30 +29,26 @@ VOLUME = 'Volume'
 DIVIDENDS = 'Dividends'
 STOCK_SPLITS = 'Stock Splits'
 
-PORTFOLIO = 'Portfolio'
-
+# Indexes
 IFIX = 'IFIX'
 SELIC = 'SELIC'
+IFIX_START_YEAR = 2010
+SELIC_START_YEAR = 2000
 
 # Experiment columns
 YEAR = 'Year'
 MONTH = 'Month'
 RISK_METHOD = 'Risk Method'
 RETURN_METHOD = 'Return Method'
-COMPOUNDING = 'Compounding'
 EXPECTED_RETURN = 'Expected Return'
 VOLATILITY = 'Volatility'
 SHARPE_RATIO = 'Sharpe Ratio'
 REAL_RETURN = 'Real Return'
 RISK_FREE_RATE = 'Risk Free Rate'
-EXPECTED_RETURN = 'Expected Returns'
-VOLATILITY = 'Volatility'
-SHARPE_RATIO = 'Sharpe Ratio'
-REAL_RETURN = 'Real Return'
-
-# Default values
-IFIX_START_YEAR = 2010
-SELIC_START_YEAR = 1990
+EVALUATION_TIME = 'Evaluation Time'
+INPUT_SIZE = 'Input Size'
+PORTFOLIO_SIZE = 'Portfolio Size'
+PORTFOLIO = 'Portfolio'
 
 # Risk methods
 SAMPLE_COV = 'sample_cov'
@@ -71,3 +69,7 @@ LIST_RETURN_METHODS = [MEAN_HISTORICAL_RETURN, EMA_HISTORICAL_RETURN,
                        CAPM_RETURN]
 
 DATE_FORMAT = '%Y-%m-%d'
+
+# Experiment parameters
+# Times in months
+TIME_HISTORY = 12

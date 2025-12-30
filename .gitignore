@@ -206,8 +206,11 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# VS Code
+.vscode/
+
 # Data
 data/
 
-# VS Code
-.vscode/
+# Scrap
+scrap/

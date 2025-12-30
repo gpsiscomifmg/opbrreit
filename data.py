@@ -18,8 +18,6 @@ from bcb import sgs
 from constants import *
 from logger import logger
 
-MIN_PARTICIPATION_THRESHOLD = 0.95
-
 def _br_value_to_float(text):
     '''
     Convert Brazilian formatted number to float
@@ -193,16 +191,16 @@ def _get_cache_dir():
     makedirs(cache_dir, exist_ok=True)
     return cache_dir
 
-def _get_filename(ticker, subdir=''):
+def _get_cache_filename(name, subdir=''):
     '''
-    Get the filename for a ticker
+    Get the cache filename
     '''
     file_dir = _get_cache_dir()
     if subdir:
         file_dir += '/' + subdir
         makedirs(file_dir,
                  exist_ok=True)
-    filename = file_dir + '/' + ticker + '.csv'
+    filename = file_dir + '/' + name + '.csv'
     return filename
 
 def _empty_stock_data():
@@ -243,7 +241,7 @@ def _download_stock_list(ticker_list):
     for ticker in tqdm(ticker_list, desc='Fetching data'):
         try:
             df_data = _fetch_stock_data(ticker)
-            filename = _get_filename(ticker, DIR_STOCK)
+            filename = _get_cache_filename(ticker, DIR_STOCK)
             df_data.to_csv(filename)
         except Exception as e:
             logger.error('Error fetching data for %s.', ticker)
@@ -253,7 +251,7 @@ def get_stock_data(ticker):
     '''
     Get stock data from cache
     '''
-    filename = _get_filename(ticker, DIR_STOCK)
+    filename = _get_cache_filename(ticker, DIR_STOCK)
     try:
         return pd.read_csv(filename, parse_dates=True, index_col=DATE)
     except:
@@ -284,7 +282,7 @@ def update_valid_reit_list():
     logger.debug('Saving valid REIT list. Total %s REITs.', len(valid_list))
     _save_valid_reit_list(valid_list)
 
-def join_history(ticker_list, start_date, end_date, fill_missing=True, 
+def join_history(ticker_list, start_date, end_date, fill_missing=False, 
                  field=CLOSE):
     '''
     Join data for multiple tickers
@@ -309,13 +307,27 @@ def join_history(ticker_list, start_date, end_date, fill_missing=True,
         df_joined.bfill(inplace=True)
     return df_joined
 
-def topk_by_volume(ticker_list, k=0, start_date=None, end_date=None,
-                   participation_threshold=MIN_PARTICIPATION_THRESHOLD):
+def filter_by_participation(df_history, threshold=0.95):
+    '''
+    Filter by participation
+    '''
+    if threshold <= 0.0 or threshold > 1.0:
+        return df_history
+    days = len(df_history)
+    min_days = int(threshold * days)
+    filtered_columns = []
+    for column in df_history.columns:
+        non_null_days = df_history[column].count()
+        if non_null_days >= min_days:
+            filtered_columns.append(column)
+    df_filtered = df_history[filtered_columns]
+    return df_filtered
+
+def topk_by_volume(ticker_list, k=0, start_date=None, end_date=None):
     '''
     Get top k tickers by average volume
     '''
     volume_list = []
-    max_days = 0
     for ticker in ticker_list:
         df_data = get_stock_data(ticker)
         if df_data is None or df_data.empty:
@@ -325,20 +337,8 @@ def topk_by_volume(ticker_list, k=0, start_date=None, end_date=None,
         # Consider VOLUME as VOLUME * CLOSE
         df_data[VOLUME] = df_data[VOLUME] * df_data[CLOSE]
         volume_sum = df_data[[VOLUME]].sum().values[0]
-        days_count = df_data[df_data[VOLUME] > 0].shape[0]
-        if days_count > max_days:
-            max_days = days_count
-        volume_list.append((ticker, volume_sum, days_count))
-        # logger.debug('Ticker %s: volume sum %.2f over %d days',
-        #              ticker, volume_sum, days_count)
+        volume_list.append((ticker, volume_sum))
         df_data = df_data[[VOLUME]]
-    # Filter out zero less than 95% of days
-    filtered_volume_list = []
-    for item in volume_list:
-        ticker, volume_sum, days_count = item
-        if days_count >= participation_threshold * max_days:
-            filtered_volume_list.append((ticker, volume_sum))
-    volume_list = filtered_volume_list
     # Sort by volume descending
     volume_list.sort(key=lambda x: x[1], reverse=True)
     if k > 0:
@@ -357,21 +357,25 @@ def count_stock_by_month(ticker_list, start_date, end_date):
     df_monthly = df_count.resample('ME').max()
     return df_monthly
 
-def save_temp_file(df_data, filename):
+def save_dataframe(df_data, filename, temp=False):
     '''
     Save DataFrame to a temporary file
     '''
-    temp_dir = tempfile.gettempdir()
-    filepath = temp_dir + '/' + filename + '.csv'
+    file_dir = DIR_DATA
+    if temp:
+        file_dir = tempfile.gettempdir()
+    filepath = file_dir + '/' + filename + '.csv'
     df_data.to_csv(filepath)
     return filepath
 
-def load_temp_file(filename):
+def load_dataframe(filename, temp=False):
     '''
     Load DataFrame from a temporary file
     '''
-    temp_dir = tempfile.gettempdir()
-    filepath = temp_dir + '/' + filename + '.csv'
+    file_dir = DIR_DATA
+    if temp:
+        file_dir = tempfile.gettempdir()
+    filepath = file_dir + '/' + filename + '.csv'
     try:
         df_data = pd.read_csv(filepath, parse_dates=True,
                               index_col=DATE)
@@ -401,7 +405,6 @@ def test():
     df = count_stock_by_month(fii_list,
                         '2010-01-01', '2024-12-31')
     logger.debug('Count by month:')
-    df.to_csv('data/fiis_count.csv')
     logger.debug('\n%s', df)
 
 def _get_arguments():
