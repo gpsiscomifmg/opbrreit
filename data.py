@@ -18,6 +18,8 @@ from bcb import sgs
 from constants import *
 from logger import logger
 
+MIN_PARTICIPATION_THRESHOLD = 0.95
+
 def _br_value_to_float(text):
     '''
     Convert Brazilian formatted number to float
@@ -110,7 +112,8 @@ def _fetch_selic(start, end):
     Fetch SELIC data from BCB
     '''
     # Get daily SELIC from BCB API
-    return sgs.get({SELIC: 432}, start=start, end=end)
+    # 4389: Accumulated annual SELIC rate
+    return sgs.get({SELIC: 4389}, start=start, end=end)
     
 def _download_selic():
     '''
@@ -126,7 +129,7 @@ def _download_selic():
         # Get annual SELIC by day
         df_current = _fetch_selic(start, end)
         year += 10
-        df_selic = pd.concat([df_selic, df_current])
+        df_selic = pd.concat([df_selic, df_current]) # type: ignore
     # Keep just the last value of each month
     df_selic = df_selic.resample('ME').last()
     df_selic[SELIC] = df_selic[SELIC] / 100.0
@@ -145,7 +148,7 @@ def _get_selic_series():
         _download_selic()
         df_selic = pd.read_csv(FILE_SELIC, parse_dates=True,
                                index_col=DATE)
-    df_selic.index = df_selic.index.to_period('M')
+    df_selic.index = df_selic.index.to_period('M') # type: ignore
     return df_selic
 
 def get_selic(year, month):
@@ -153,10 +156,11 @@ def get_selic(year, month):
     Get SELIC rate for a given month
     '''
     df_selic = _get_selic_series()
+    selic_rate = 0.0
     try:
         selic_rate = df_selic.loc[str(year) + '-' + str(month)][SELIC]
     except:
-        selic_rate = 0.0
+        pass
     return selic_rate
 
 def get_reit_list(only_valid=False):
@@ -193,12 +197,12 @@ def _get_filename(ticker, subdir=''):
     '''
     Get the filename for a ticker
     '''
-    filedir = _get_cache_dir()
+    file_dir = _get_cache_dir()
     if subdir:
-        filedir += '/' + subdir
-        makedirs(filedir,
+        file_dir += '/' + subdir
+        makedirs(file_dir,
                  exist_ok=True)
-    filename = filedir + '/' + ticker + '.csv'
+    filename = file_dir + '/' + ticker + '.csv'
     return filename
 
 def _empty_stock_data():
@@ -305,11 +309,13 @@ def join_history(ticker_list, start_date, end_date, fill_missing=True,
         df_joined.bfill(inplace=True)
     return df_joined
 
-def topk_by_volume(ticker_list, k=0, start_date=None, end_date=None):
+def topk_by_volume(ticker_list, k=0, start_date=None, end_date=None,
+                   participation_threshold=MIN_PARTICIPATION_THRESHOLD):
     '''
     Get top k tickers by average volume
     '''
     volume_list = []
+    max_days = 0
     for ticker in ticker_list:
         df_data = get_stock_data(ticker)
         if df_data is None or df_data.empty:
@@ -319,8 +325,20 @@ def topk_by_volume(ticker_list, k=0, start_date=None, end_date=None):
         # Consider VOLUME as VOLUME * CLOSE
         df_data[VOLUME] = df_data[VOLUME] * df_data[CLOSE]
         volume_sum = df_data[[VOLUME]].sum().values[0]
-        volume_list.append((ticker, volume_sum))
+        days_count = df_data[df_data[VOLUME] > 0].shape[0]
+        if days_count > max_days:
+            max_days = days_count
+        volume_list.append((ticker, volume_sum, days_count))
+        # logger.debug('Ticker %s: volume sum %.2f over %d days',
+        #              ticker, volume_sum, days_count)
         df_data = df_data[[VOLUME]]
+    # Filter out zero less than 95% of days
+    filtered_volume_list = []
+    for item in volume_list:
+        ticker, volume_sum, days_count = item
+        if days_count >= participation_threshold * max_days:
+            filtered_volume_list.append((ticker, volume_sum))
+    volume_list = filtered_volume_list
     # Sort by volume descending
     volume_list.sort(key=lambda x: x[1], reverse=True)
     if k > 0:
@@ -371,7 +389,7 @@ def test():
     df = _get_selic_series()
     logger.debug('SELIC: %s rows', len(df))
     fii_list = get_reit_list(only_valid=True)
-    df = topk_by_volume(fii_list, k=10)
+    df = topk_by_volume(fii_list, 10, '2024-01-01', '2024-12-31')
     logger.debug('Top 10 by volume:')
     topk_list = df[TICKER].tolist()
     logger.debug('%s', topk_list)
